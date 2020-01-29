@@ -6,7 +6,7 @@ use std::fs;
 use std::str;
 use crypto::digest::Digest;
 use crypto::sha1::Sha1;
-use base64::{encode, decode};
+use base64::{encode};
 /*
     This is the function that will handle the connection,
     figure out if its an http request or websocket 
@@ -51,7 +51,7 @@ pub fn route(mut stream: TcpStream) {
         // read hash digest
         let mut hash_output = [0 ; 20];
         hasher.result(&mut hash_output);
-        println!("{}",&hash_output[0]);
+        //println!("{}",&hash_output[0]);
         let hex = encode(&hash_output);
         println!("client websocket key : {}", request_header.header_options.get("Sec-WebSocket-Key").unwrap());
         println!("client hashed    key : {}", hex);
@@ -62,8 +62,25 @@ Connection: Upgrade\r\n\
 Sec-WebSocket-Accept: ")+ &hex +"
 \r\n\r\n".clone();
 
-        println!("response {}",response);
+        
         stream.write(response.as_bytes()).unwrap();
+        //  we are here lets make a new object for 
+        //  the websocket connection data 
+        let mut websocket = new_websocket(stream);
+
+        //  now we wait for a message from them and just the header
+        let mut header_buffer = [0; 14];
+        //  
+        websocket.stream.read(&mut header_buffer).unwrap();
+        //  here we can do sometrhing with they bytes 
+        //  so lets parse the packet ??? 
+        parse_packet(&header_buffer,websocket);
+        //println!("{:?}",buffer.bytes());
+        while true {
+            parse_packet(&header_buffer,websocket);
+        }
+        
+
     }
 
     
@@ -176,4 +193,65 @@ impl FromStr for HTTPHeader {
 //  as the name says removes any whitespace on this thing
 fn remove_whitespace(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+
+//  data frame stuff here 
+pub struct WebSocketConnection{
+    stream : TcpStream,
+    disconnect : bool
+
+}
+
+fn parse_packet(& buffer : &[u8; 14],mut websocket: WebSocketConnection){
+    //  first get the fin packet number  (the last bit of the first one )
+    let fin = get_bit_at(buffer[0],7); 
+    //  then get the mask   (last bit of the seond one )
+    let mask = get_bit_at(buffer[1],7);
+    //  then get the op code  (first 4 of the first one)
+    let opcode = (buffer[0] & 0b0000_1111) as u8;
+    //  payload length (the first 7 of the 2nd one)
+    let mut payload_length = (buffer[0] & 0b0111_1111) as u64;
+    //  extended payload length 
+    if payload_length == 126 {
+        //  interprest the next 16 bits as a number cuz that is the payload length
+        payload_length = ((buffer[2] as u64) << 8) | buffer[3] as u64;
+    } else if payload_length == 127 {
+        //  interprest the next 64 bits as the payload length 
+        payload_length = ((buffer[2] as u64) << 56) | ((buffer[3] as u64) << 48) |
+                         ((buffer[4] as u64) << 40) | ((buffer[5] as u64) << 32) |
+                         ((buffer[6] as u64) << 24) | ((buffer[7] as u64) << 16) | 
+                         ((buffer[8] as u64) << 8) | buffer[9] as u64;
+
+    }
+
+
+    //  payload data
+        //  alocate a buffer with all length of the data from the 
+        //  frame 
+    let payload_data_length = payload_length as usize;
+        //  we must see if it is 32 bits 
+    let mut payload_data = vec![0;payload_data_length];
+    //  copy the remaining bits from the buffer thing
+    websocket.stream.read(&mut payload_data).unwrap();
+    //  use the stream to get the rest of the payload bytes 
+    println!("payload Bytes : {:?}",payload_data.bytes())
+    
+
+}
+
+pub fn new_websocket(stream: TcpStream) -> WebSocketConnection{
+    WebSocketConnection{
+        stream: stream.try_clone().expect("clone failed..."),
+        disconnect : false
+    }
+}
+
+/// gets the bit at position `n`. Bits are numbered from 0 (least significant) to 31 (most significant).
+fn get_bit_at(input: u8, n: u8) -> bool {
+    if n < 32 {
+        input & (1 << n) != 0
+    } else {
+        false
+    }
 }
