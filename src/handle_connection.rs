@@ -72,14 +72,20 @@ Sec-WebSocket-Accept: ")+ &hex +"
         
         //  here we can do sometrhing with they bytes 
         //  so lets parse the packet ??? 
-        let mut frame = websocket.parse_packet_header();
+        let mut frame = websocket.parse_packet();
 
-        println!("{:?}",frame);
+        //println!("{:?}",frame);
         //  make a buffer for the new bytes 
         
         websocket.read_payload(&mut frame);
+        
         loop{
-            //websocket.parse_packet(&header_buffer);
+            let mut frame = websocket.parse_packet();
+
+            //println!("{:?}",frame);
+            //  make a buffer for the new bytes 
+            
+            websocket.read_payload(&mut frame);
         }
         
 
@@ -217,59 +223,63 @@ pub struct WebSocketFrame{
 use std::cmp;
 use std::io::Write;
 impl WebSocketConnection{
-    fn parse_packet_header(&mut self) -> WebSocketFrame{
+    fn parse_packet(&mut self) -> WebSocketFrame{
         //  the message buffer
-        let mut buffer = [0; 512];
+        let mut first_header_buffer = [0;2];
+        
         //  
-        self.stream.read(&mut buffer);
-        let fin = get_bit_at(buffer[0],7); 
+        self.stream.read(&mut first_header_buffer);
+        let fin = get_bit_at(first_header_buffer[0],7); 
         //  then get the mask   (last bit of the seond one )
-        let mask = get_bit_at(buffer[1],7);
+        let mask = get_bit_at(first_header_buffer[1],7);
         //  then get the masking key 
         
         //  then get the op code  (first 4 of the first one)
-        let opcode = (buffer[0] & 0b0000_1111) as u8;
+        let opcode = (first_header_buffer[0] & 0b0000_1111) as u8;
         //  payload length (the first 7 of the 2nd one)
-        let mut payload_length = (buffer[1] & 0b0111_1111) as u64;
+        let mut payload_length = (first_header_buffer[1] & 0b0111_1111) as u64;
         //  extended payload length if it is one of these the masking key and op code go over by one 
-        let mut mask_offset = 0;    //  the offset of how long the payload length is 
+        
         if payload_length == 126 {
+            let mut payload_length_header = [0;2];
+            self.stream.read(&mut payload_length_header);
+            // here we only need to get the next 6 bytes 
             //  interprest the next 16 bits as a number cuz that is the payload length
-            payload_length = ((buffer[2] as u64) << 8) | buffer[3] as u64;
-            mask_offset = 2;
+            payload_length = ((payload_length_header[0] as u64) << 8) | payload_length_header[1] as u64;
+            
         } else if payload_length == 127 {
+            let mut payload_length_header = [0;8];
+            self.stream.read(&mut payload_length_header);
+            //  here we need to get the next 12 bytes 
             //  interpret the next 64 bits as the payload length 
-            payload_length = ((buffer[2] as u64) << 56) | ((buffer[3] as u64) << 48) |
-                            ((buffer[4] as u64) << 40) | ((buffer[5] as u64) << 32) |
-                            ((buffer[6] as u64) << 24) | ((buffer[7] as u64) << 16) | 
-                            ((buffer[8] as u64) << 8) | buffer[9] as u64;
-            mask_offset = 8;
+            payload_length = ((payload_length_header[0] as u64) << 56) | ((payload_length_header[1] as u64) << 48) |
+                            ((payload_length_header[2] as u64) << 40) | ((payload_length_header[3] as u64) << 32) |
+                            ((payload_length_header[4] as u64) << 24) | ((payload_length_header[5] as u64) << 16) | 
+                            ((payload_length_header[6] as u64) << 8) | payload_length_header[7] as u64;
+            
         }
-        let masking_key = [((buffer[2+mask_offset] as u8) ) , ((buffer[3+mask_offset] as u8) ) ,
-                          ((buffer[4+mask_offset] as u8)) , buffer[5+mask_offset] as u8];
+        //  get the masking key 
+
+
+        let mut masking_key = [0;4];
+        self.stream.read(&mut masking_key);
+
+        //  now that all of that is done we can get the payload length with one jian buffer 
 
 
         //  payload data
             //  alocate a buffer with all length of the data from the 
             //  frame 
         let payload_data_length = payload_length as usize;
-            //  we must see if it is 32 bits 
-        println!("Websocket Frame Header :\n{:?}",buffer.bytes());
-        println!("Payload Length: {}",&payload_data_length);
-        
-        //  lets get the data that is already in the buffer and get more from the 
-        //  stream if we need more 
-        //  get the payload minus the control bits at the front 
-        let mut start_index = 6 + mask_offset;
-        let mut end_index = payload_data_length + 6 + mask_offset;
         let mut  payload_data = vec![0;payload_data_length];
-        for i in 0 .. payload_data_length{
-            payload_data[i] = (buffer[i+6+mask_offset] ^ ((masking_key[i%4]) as u8)) as u8
+        self.stream.read(&mut payload_data.as_mut_slice());
+            //  we must see if it is 32 bits 
+        //println!("Websocket Frame Header :\n{:?}",buffer.bytes());
+        println!("Payload Length: {}",&payload_data_length);
+        for  i in 0 .. payload_data_length{
+            payload_data[i] = (payload_data[i] ^ (masking_key[i%4]))
         }
-        
-       
-        //  if its longer than the buffer then we need to loop through and 
-        //  get the rest of the data 
+    
 
         WebSocketFrame{
             fin : fin,
@@ -290,6 +300,17 @@ impl WebSocketConnection{
         // }
 
         println!("Websocket Frame Payload :\n{:?}",str::from_utf8(frame.payload_data.as_mut_slice()).unwrap());
+    }
+
+    fn construct_packet(&mut self){
+        
+    }
+
+    fn send_ping(&mut self){
+
+    }
+    fn send_pong(&mut self){
+        
     }
 }
 pub fn new_websocket(stream: TcpStream) -> WebSocketConnection{
